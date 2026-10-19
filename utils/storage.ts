@@ -28,3 +28,8 @@ export async function getDraft(key: string) {
   const db = await getDB();
   return db.get(STORE_NAME, key);
 }
+
+export async function deleteDraft(key: string) {
+  const db = await getDB();
+  return db.delete(STORE_NAME, key);
+}

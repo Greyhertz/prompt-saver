@@ -1,4 +1,4 @@
-import { saveDraft, getDraft } from "@/utils/storage";
+import { saveDraft, getDraft, deleteDraft } from "@/utils/storage";
 
 export default defineBackground(() => {
   browser.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -8,6 +8,9 @@ export default defineBackground(() => {
     if (message.type === "GET_DRAFT") {
       getDraft("current_draft").then(sendResponse);
       return true;
+    }
+    if (message.type === "DELETE_DRAFT") {
+      deleteDraft("current_draft");
     }
   });
 });

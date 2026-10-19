@@ -2,13 +2,19 @@ import { createRoot } from "react-dom/client";
 import React from "react";
 import SaveStatus from "../components/SaveStatus";
 
+function setNativeValue(el: HTMLTextAreaElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(
+    HTMLTextAreaElement.prototype,
+    "value",
+  )!.set!;
+  setter.call(el, value);
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
 export default defineContentScript({
   matches: ["https://aistudio.google.com/*"],
   main() {
-    console.log("🔥 [Prompt Saver] Main function started!");
-
     const mountPoint = document.createElement("div");
-    mountPoint.id = "prompt-saver-badge";
     Object.assign(mountPoint.style, {
       position: "fixed",
       top: "70px",
@@ -21,17 +27,16 @@ export default defineContentScript({
     root.render(<SaveStatus status="saved" />);
 
     let timer: ReturnType<typeof setTimeout>;
+    let restoring = false;
 
-    // Event delegation: works even if the textarea is re-rendered
+    // ---- SAVE ----
     document.addEventListener(
       "input",
       (e) => {
-        const el = e.target as HTMLElement;
-        if (!(el instanceof HTMLTextAreaElement)) return;
+        const el = e.target;
+        if (!(el instanceof HTMLTextAreaElement) || restoring) return;
 
-        console.log("✍️ Prompt changed, saving...");
         root.render(<SaveStatus status="saving" />);
-
         clearTimeout(timer);
         timer = setTimeout(async () => {
           await browser.runtime.sendMessage({
@@ -41,7 +46,47 @@ export default defineContentScript({
           root.render(<SaveStatus status="saved" />);
         }, 800);
       },
-      true // capture phase
+      true,
+    );
+
+    // ---- RESTORE ----
+    const tryRestore = async () => {
+      const draft = await browser.runtime.sendMessage({ type: "GET_DRAFT" });
+      if (!draft?.text) return;
+
+      let attempts = 0;
+      const poll = setInterval(() => {
+        const el = document.querySelector<HTMLTextAreaElement>("textarea");
+        attempts++;
+        if (el) {
+          clearInterval(poll);
+          if (el.value.trim() === "") {
+            restoring = true;
+            setNativeValue(el, draft.text);
+            restoring = false;
+            console.log("♻️ Draft restored");
+          }
+        } else if (attempts > 30) {
+          clearInterval(poll); // give up after ~15s
+        }
+      }, 500);
+    };
+
+    tryRestore();
+
+    document.addEventListener(
+      "keydown",
+      (e) => {
+        const isSend =
+          e.key === "Enter" && (e.ctrlKey || e.metaKey || !e.shiftKey);
+        if (isSend && e.target instanceof HTMLTextAreaElement) {
+          setTimeout(
+            () => browser.runtime.sendMessage({ type: "DELETE_DRAFT" }),
+            500,
+          );
+        }
+      },
+      true,
     );
   },
 });
