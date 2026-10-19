@@ -1,14 +1,13 @@
-import { saveDraft, getDraft } from '@/utils/storage';
+import { saveDraft, getDraft } from "@/utils/storage";
 
-// Listen for messages from the content script
-browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.type === 'SAVE_DRAFT') {
-    saveDraft('current_draft', message.payload);
-    console.log('Draft saved to IndexedDB');
-  }
-  
-  if (message.type === 'GET_DRAFT') {
-    getDraft('current_draft').then(sendResponse);
-    return true; // Indicates async response
-  }
+export default defineBackground(() => {
+  browser.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message.type === "SAVE_DRAFT") {
+      saveDraft("current_draft", message.payload);
+    }
+    if (message.type === "GET_DRAFT") {
+      getDraft("current_draft").then(sendResponse);
+      return true;
+    }
+  });
 });
