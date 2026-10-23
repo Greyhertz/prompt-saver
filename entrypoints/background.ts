@@ -1,11 +1,9 @@
 import { saveValue, getValue, clearDraft } from "@/utils/storage";
 
-type SavedFile = { name: string; type: string; dataUrl: string };
-
 export default defineBackground(() => {
   // Run operations one at a time so they can't overwrite each other
   let queue: Promise<unknown> = Promise.resolve();
-  const enqueue = <T,>(fn: () => Promise<T>) => {
+  const enqueue = <T>(fn: () => Promise<T>) => {
     const next = queue.then(fn, fn);
     queue = next.catch(() => {});
     return next;
@@ -17,17 +15,15 @@ export default defineBackground(() => {
         enqueue(() => saveValue("text", message.payload.text));
         return;
 
-      case "SAVE_FILES":
-        enqueue(async () => {
-          const existing: SavedFile[] = (await getValue("files")) ?? [];
-          await saveValue("files", [...existing, ...message.payload.files]);
-        });
+      // The content script owns the list; we just store it
+      case "SET_FILES":
+        enqueue(() => saveValue("files", message.payload.files));
         return;
 
       case "GET_DRAFT":
         enqueue(async () => ({
           text: (await getValue<string>("text")) ?? "",
-          files: (await getValue<SavedFile[]>("files")) ?? [],
+          files: (await getValue<any[]>("files")) ?? [],
         })).then(sendResponse);
         return true;
 

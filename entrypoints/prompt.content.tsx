@@ -2,6 +2,18 @@ import { createRoot } from "react-dom/client";
 import React from "react";
 import SaveStatus from "../components/SaveStatus";
 
+type SavedFile = {
+  kind?: string;
+  name: string;
+  type: string;
+  dataUrl: string;
+  pastedText?: string;
+};
+
+const REMOVE_SEL = 'button[aria-label="Remove media"]';
+const chipCount = () => document.querySelectorAll(REMOVE_SEL).length;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 function setNativeValue(el: HTMLTextAreaElement, value: string) {
   const setter = Object.getOwnPropertyDescriptor(
     HTMLTextAreaElement.prototype,
@@ -11,9 +23,7 @@ function setNativeValue(el: HTMLTextAreaElement, value: string) {
   el.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
-function fileToSaved(
-  file: File,
-): Promise<{ name: string; type: string; dataUrl: string }> {
+function fileToSaved(file: File): Promise<SavedFile> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () =>
@@ -27,9 +37,54 @@ function fileToSaved(
   });
 }
 
-async function savedToFile(f: { name: string; type: string; dataUrl: string }) {
+async function savedToFile(f: SavedFile) {
   const blob = await (await fetch(f.dataUrl)).blob();
   return new File([blob], f.name, { type: f.type });
+}
+
+// Wait until the chip count stops changing for `quiet` ms
+async function settleChips(quiet = 1200, max = 10000) {
+  const end = Date.now() + max;
+  let last = chipCount();
+  let since = Date.now();
+  while (Date.now() < end) {
+    await sleep(200);
+    const now = chipCount();
+    if (now !== last) {
+      last = now;
+      since = Date.now();
+    } else if (Date.now() - since >= quiet) break;
+  }
+  return last;
+}
+
+// Replay one saved item as a synthetic paste; true if a new chip appeared
+async function attachFile(el: HTMLTextAreaElement, f: SavedFile) {
+  const before = chipCount();
+  const dt = new DataTransfer();
+  if (f.kind === "paste-text") dt.setData("text/plain", f.pastedText ?? "");
+  else dt.items.add(await savedToFile(f));
+
+  el.focus();
+  el.dispatchEvent(
+    new ClipboardEvent("paste", {
+      clipboardData: dt,
+      bubbles: true,
+      cancelable: true,
+    }),
+  );
+
+  const end = Date.now() + 8000;
+  while (Date.now() < end) {
+    if (chipCount() > before) {
+      await sleep(400);
+      console.log(`✅ Restored: ${f.name}`);
+      return true;
+    }
+    await sleep(250);
+  }
+  console.warn(`❌ No chip appeared for: ${f.name}`);
+  return false;
 }
 
 export default defineContentScript({
@@ -49,25 +104,42 @@ export default defineContentScript({
     const getTextarea = () =>
       document.querySelector<HTMLTextAreaElement>("textarea");
 
+    // ---------- state ----------
+    // `current` mirrors the chips on screen, in the same order.
+    let current: SavedFile[] = [];
     let timer: ReturnType<typeof setTimeout>;
-    let lastText = ""; // last non-debounced text we saw
-    let restoring = false; // true while we inject restored content
-    let restoreDone = false; // don't run "cleared" detection until restore finished
+    let lastText = "";
+    let restoringText = false;
+    let restoreDone = false;
+    let settleAt = Infinity;
+    let busy = 0; // number of queued/running tasks
+    let zeroTicks = 0;
+    let mismatchTicks = 0;
 
-    const clearEverything = () => {
-      clearTimeout(timer);
-      lastText = "";
-      browser.runtime.sendMessage({ type: "CLEAR_DRAFT" });
-      root.render(<SaveStatus status="saved" />);
-      console.log("🗑️ Draft cleared");
+    const persist = () =>
+      browser.runtime.sendMessage({
+        type: "SET_FILES",
+        payload: { files: current },
+      });
+
+    // One queue for restore, captures and removals: nothing interleaves.
+    let ops: Promise<void> = Promise.resolve();
+    const enqueue = (fn: () => Promise<void>) => {
+      busy++;
+      ops = ops
+        .then(fn)
+        .catch((e) => console.error("Prompt Saver task failed:", e))
+        .finally(() => {
+          busy--;
+        });
     };
 
-    // ---- SAVE TEXT ----
+    // ---------- SAVE TEXT ----------
     document.addEventListener(
       "input",
       (e) => {
         const el = e.target;
-        if (!(el instanceof HTMLTextAreaElement) || restoring) return;
+        if (!(el instanceof HTMLTextAreaElement) || restoringText) return;
 
         lastText = el.value;
         root.render(<SaveStatus status="saving" />);
@@ -83,96 +155,58 @@ export default defineContentScript({
       true,
     );
 
-    // ---- DETECT SEND: textarea went from non-empty to empty ----
-    setInterval(() => {
-      if (!restoreDone) return;
-      const el = getTextarea();
-      if (!el) return;
-      if (lastText.trim() !== "" && el.value.trim() === "") {
-        clearEverything();
-      }
-    }, 400);
+    // ---------- CAPTURE (real user actions only) ----------
+    // Save only if a NEW chip really appeared, so AI Studio decides what counts.
+    const capture = (files: File[], pastedText: string, source: string) => {
+      enqueue(async () => {
+        const settled = await settleChips();
+        const delta = settled - current.length;
+        if (delta <= 0) return; // no chip -> text went into the box, or upload failed
 
-    // Backups (also covers file-only prompts with no text)
-    document.addEventListener(
-      "keydown",
-      (e) => {
-        if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
-          setTimeout(clearEverything, 1000);
+        let items: SavedFile[] = [];
+        if (files.length) {
+          items = await Promise.all(files.map(fileToSaved));
+        } else if (pastedText) {
+          items = [
+            {
+              kind: "paste-text",
+              name: "pasted-text",
+              type: "text/plain",
+              dataUrl: "",
+              pastedText,
+            },
+          ];
         }
-      },
-      true,
-    );
-    document.addEventListener(
-      "click",
-      (e) => {
-        const btn = (e.target as HTMLElement)?.closest("button");
-        const label = (
-          btn?.getAttribute("aria-label") ||
-          btn?.textContent ||
-          ""
-        ).trim();
-        if (btn && /^(run|send)\b/i.test(label)) {
-          setTimeout(clearEverything, 1000);
-        }
-      },
-      true,
-    );
+        if (!items.length) return;
 
-    // ---- SAVE FILES ----
-    const saveFiles = async (files: File[], source: string) => {
-      if (restoring || files.length === 0) return;
-      const saved = await Promise.all(files.map(fileToSaved));
-      await browser.runtime.sendMessage({
-        type: "SAVE_FILES",
-        payload: { files: saved },
+        if (items.length !== delta) {
+          console.warn(`⚠️ ${items.length} item(s) captured but ${delta} new chip(s)`);
+        }
+        current = [...current, ...items.slice(0, delta)];
+        await persist();
+        console.log(`📁 Saved ${Math.min(delta, items.length)} from ${source}. Total:`, current.length);
       });
-      console.log(`📁 Saved ${saved.length} file(s) from ${source}`);
     };
 
     document.addEventListener(
       "change",
       (e) => {
+        if (!e.isTrusted) return;
         const t = e.target;
-        if (
-          t instanceof HTMLInputElement &&
-          t.type === "file" &&
-          t.files?.length
-        ) {
-          saveFiles(Array.from(t.files), "file input");
+        if (t instanceof HTMLInputElement && t.type === "file" && t.files?.length) {
+          capture(Array.from(t.files), "", "file input");
         }
       },
       true,
     );
 
-    const LONG_PASTE_MIN = 2000; // tune this to match when AI Studio makes a chip
-
     document.addEventListener(
       "paste",
       (e) => {
-        if (restoring) return;
+        if (!e.isTrusted) return;
         const files = Array.from(e.clipboardData?.files ?? []);
         const text = e.clipboardData?.getData("text/plain") ?? "";
-
-        if (files.length) saveFiles(files, "paste");
-
-        if (text.length >= LONG_PASTE_MIN) {
-          browser.runtime.sendMessage({
-            type: "SAVE_FILES",
-            payload: {
-              files: [
-                {
-                  kind: "paste-text",
-                  name: "pasted-text",
-                  type: "text/plain",
-                  dataUrl: "",
-                  pastedText: text,
-                },
-              ],
-            },
-          });
-          console.log("📋 Saved long pasted text:", text.length, "chars");
-        }
+        if (files.length || text) capture(files, files.length ? "" : text, "paste");
       },
       true,
     );
@@ -180,70 +214,136 @@ export default defineContentScript({
     document.addEventListener(
       "drop",
       (e) => {
-        if (restoring) return;
+        if (!e.isTrusted) return;
         const files = Array.from(e.dataTransfer?.files ?? []);
-        saveFiles(files, "drop");
+        if (files.length) capture(files, "", "drop");
       },
       true,
     );
 
-    // ---- RESTORE ----
-    const restore = async () => {
-      const draft = await browser.runtime.sendMessage({ type: "GET_DRAFT" });
-      const hasText = !!draft?.text?.trim();
-      const hasFiles = !!draft?.files?.length;
-      if (!hasText && !hasFiles) {
-        restoreDone = true;
+    // ---------- REMOVE ONE (real clicks only) ----------
+    document.addEventListener(
+      "click",
+      (e) => {
+        if (!e.isTrusted) return;
+        const btn = (e.target as HTMLElement)?.closest<HTMLButtonElement>(REMOVE_SEL);
+        if (!btn) return;
+
+        // Capture phase: the chip is still in the DOM, so read its position now
+        const all = Array.from(document.querySelectorAll(REMOVE_SEL));
+        const index = all.indexOf(btn);
+
+        enqueue(async () => {
+          if (index >= 0 && index < current.length) {
+            current.splice(index, 1);
+            await persist();
+            console.log("🗑️ Removed item", index, "remaining:", current.length);
+          }
+          // If AI Studio shows fewer chips than we have, trim to match
+          const settled = await settleChips();
+          if (current.length > settled) {
+            current = current.slice(0, settled);
+            await persist();
+            console.log("✂️ Trimmed to match chips:", settled);
+          }
+        });
+      },
+      true,
+    );
+
+    // ---------- SELF-HEALING + SEND DETECTION ----------
+    setInterval(() => {
+      if (!restoreDone || busy > 0 || Date.now() < settleAt) {
+        zeroTicks = 0;
+        mismatchTicks = 0;
         return;
       }
+      const chips = chipCount();
 
-      let attempts = 0;
-      const poll = setInterval(async () => {
+      // No chips for ~1.2s -> prompt was sent or all removed
+      if (chips === 0 && current.length > 0) {
+        if (++zeroTicks >= 3) {
+          zeroTicks = 0;
+          current = [];
+          persist();
+          console.log("🗑️ No chips left, files cleared");
+        }
+      } else zeroTicks = 0;
+
+      // Saved list longer than chips for ~1.6s -> trim to match
+      if (chips > 0 && chips < current.length) {
+        if (++mismatchTicks >= 4) {
+          mismatchTicks = 0;
+          current = current.slice(0, chips);
+          persist();
+          console.log("✂️ Reconciled to", chips);
+        }
+      } else mismatchTicks = 0;
+
+      // Textarea emptied (sent or deleted) -> save empty text
+      const el = getTextarea();
+      if (el && lastText.trim() !== "" && el.value.trim() === "") {
+        clearTimeout(timer);
+        lastText = "";
+        browser.runtime.sendMessage({ type: "SAVE_TEXT", payload: { text: "" } });
+        root.render(<SaveStatus status="saved" />);
+        console.log("🗑️ Text cleared");
+      }
+    }, 400);
+
+    // ---------- RESTORE ----------
+    const waitForTextarea = async () => {
+      for (let i = 0; i < 30; i++) {
         const el = getTextarea();
-        attempts++;
-
-        if (!el) {
-          if (attempts > 30) {
-            clearInterval(poll);
-            restoreDone = true;
-          }
-          return;
-        }
-        clearInterval(poll);
-
-        restoring = true;
-        try {
-          if (hasText && el.value.trim() === "") {
-            setNativeValue(el, draft.text);
-            lastText = draft.text;
-            console.log("♻️ Text restored");
-          }
-          if (hasFiles) {
-            el.focus();
-            for (const f of draft.files) {
-              const dt = new DataTransfer();
-              if (f.kind === "paste-text")
-                dt.setData("text/plain", f.pastedText);
-              else dt.items.add(await savedToFile(f));
-
-              el.dispatchEvent(
-                new ClipboardEvent("paste", {
-                  clipboardData: dt,
-                  bubbles: true,
-                  cancelable: true,
-                }),
-              );
-              await new Promise((r) => setTimeout(r, 300)); // let AI Studio process each one
-            }
-            console.log("♻️ Replayed", draft.files.length, "paste(s)");
-          }
-        } finally {
-          restoring = false;
-          restoreDone = true;
-        }
-      }, 500);
+        if (el) return el;
+        await sleep(500);
+      }
+      return null;
     };
 
-    restore();
+    enqueue(async () => {
+      try {
+        const draft = await browser.runtime.sendMessage({ type: "GET_DRAFT" });
+        const text: string = draft?.text ?? "";
+        const files: SavedFile[] = draft?.files ?? [];
+        if (!text.trim() && files.length === 0) return;
+
+        const el = await waitForTextarea();
+        if (!el) return;
+        await sleep(1000); // let the app finish initializing
+
+        if (chipCount() > 0) {
+          console.warn("⚠️ Page already has chips, skipping file restore");
+        } else {
+          // Files first (AI Studio may reset the box while handling them)
+          current = [];
+          for (const f of files) {
+            if (await attachFile(el, f)) current.push(f);
+          }
+          if (current.length !== files.length) {
+            console.warn(`⚠️ Restored ${current.length} of ${files.length} files`);
+          }
+          await persist();
+        }
+
+        // Text last
+        const applyText = () => {
+          const box = getTextarea();
+          if (text.trim() && box && box.value.trim() === "") {
+            restoringText = true;
+            setNativeValue(box, text);
+            restoringText = false;
+            lastText = text;
+            console.log("♻️ Text restored");
+          }
+        };
+        applyText();
+        await sleep(2000);
+        applyText(); // re-apply if AI Studio reset the box again
+      } finally {
+        restoreDone = true;
+        settleAt = Date.now() + 1500;
+      }
+    });
   },
 });
