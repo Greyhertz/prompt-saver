@@ -17,6 +17,7 @@ body {
   margin: 0;
   background: light-dark(#ffffff, #1e1e1e);
   color: light-dark(#171717, #ededed);
+
 }
 
 button {
@@ -28,6 +29,7 @@ button {
   width: 300px;
   padding: 14px;
   background: light-dark(#ffffff, #1e1e1e);
+  border-radius: 20px;
 }
 
 .popup-header {

@@ -10,25 +10,26 @@ export default defineBackground(() => {
   };
 
   browser.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    const key: string = message.key;
+
     switch (message.type) {
       case "SAVE_TEXT":
-        enqueue(() => saveValue("text", message.payload.text));
+        enqueue(() => saveValue(`${key}:text`, message.payload.text));
         return;
 
-      // The content script owns the list; we just store it
       case "SET_FILES":
-        enqueue(() => saveValue("files", message.payload.files));
+        enqueue(() => saveValue(`${key}:files`, message.payload.files));
         return;
 
       case "GET_DRAFT":
         enqueue(async () => ({
-          text: (await getValue<string>("text")) ?? "",
-          files: (await getValue<any[]>("files")) ?? [],
+          text: (await getValue<string>(`${key}:text`)) ?? "",
+          files: (await getValue<any[]>(`${key}:files`)) ?? [],
         })).then(sendResponse);
         return true;
 
       case "CLEAR_DRAFT":
-        enqueue(() => clearDraft()).then(() => sendResponse({ ok: true }));
+        enqueue(() => clearDraft(key)).then(() => sendResponse({ ok: true }));
         return true;
     }
   });

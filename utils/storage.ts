@@ -23,8 +23,12 @@ export async function getValue<T = any>(key: string): Promise<T | undefined> {
   return db.get(STORE_NAME, key);
 }
 
-export async function clearDraft() {
+export async function clearDraft(key: string) {
   const db = await getDB();
   const tx = db.transaction(STORE_NAME, "readwrite");
-  await Promise.all([tx.store.delete("text"), tx.store.delete("files"), tx.done]);
+  await Promise.all([
+    tx.store.delete(`${key}:text`),
+    tx.store.delete(`${key}:files`),
+    tx.done,
+  ]);
 }
