@@ -22,6 +22,11 @@ export abstract class ChatAdapter {
   /** Is this element the Run/Send control? */
   abstract isSendControl(el: Element): boolean;
 
+  /** Match patterns for the content script, derived from hosts */
+  get matches(): string[] {
+    return this.hosts.map((h) => `https://${h}/*`);
+  }
+
   matchesHost(hostname: string): boolean {
     return this.hosts.includes(hostname);
   }

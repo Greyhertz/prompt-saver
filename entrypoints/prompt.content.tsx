@@ -1,13 +1,15 @@
 import { createRoot } from "react-dom/client";
 import React from "react";
 import SaveStatus from "../components/SaveStatus";
-import { pickAdapter } from "@/adapters";
+import { AIStudioAdapter } from "@/adapters/aistudio";
 import { startEngine } from "@/core/engine";
 
+const adapters = [new AIStudioAdapter()];
+
 export default defineContentScript({
-  matches: ["https://aistudio.google.com/*"],
+  matches: adapters.flatMap((a) => a.matches),
   main() {
-    const adapter = pickAdapter();
+    const adapter = adapters.find((a) => a.matchesHost(location.hostname));
     if (!adapter) return;
 
     const mountPoint = document.createElement("div");
@@ -21,6 +23,8 @@ export default defineContentScript({
     const root = createRoot(mountPoint);
     root.render(<SaveStatus status="saved" />);
 
-    startEngine(adapter, (status) => root.render(<SaveStatus status={status} />));
+    startEngine(adapter, (status) =>
+      root.render(<SaveStatus status={status} />),
+    );
   },
 });
