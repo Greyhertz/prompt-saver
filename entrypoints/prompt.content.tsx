@@ -1,5 +1,4 @@
 import { createRoot } from "react-dom/client";
-import React from "react";
 import SaveStatus from "../components/save-status";
 import { AIStudioAdapter } from "@/adapters/aistudio";
 import { startEngine } from "@/core/engine";

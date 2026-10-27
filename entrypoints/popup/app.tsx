@@ -1,12 +1,9 @@
-
-import { useState } from 'react';
-import reactLogo from '@/assets/react.svg';
-import logo from '@/assets/logo.png';
-import wxtLogo from '/wxt.svg';
-import './app.css';
+import { useState } from "react";
+import logo from "@/assets/logo.png";
+import "./app.css";
 
 function App() {
-  const [activeTab, setActiveTab] = useState<'guide' | 'status'>('guide');
+  const [activeTab, setActiveTab] = useState<"guide" | "status">("guide");
 
   return (
     <main className="popup-container">
@@ -16,7 +13,7 @@ function App() {
             <img src={wxtLogo} className="logo" alt="WXT logo" />
           </a> */}
           <a href="https://react.dev" target="_blank" rel="noreferrer">
-             <img src={logo} className="logo" alt="Prompt Saver logo" />
+            <img src={logo} className="logo" alt="Prompt Saver logo" />
           </a>
         </div>
 
@@ -27,21 +24,21 @@ function App() {
       <nav className="tabs" aria-label="Navigation">
         <button
           type="button"
-          className={activeTab === 'guide' ? 'tab active' : 'tab'}
-          onClick={() => setActiveTab('guide')}
+          className={activeTab === "guide" ? "tab active" : "tab"}
+          onClick={() => setActiveTab("guide")}
         >
           How to Use
         </button>
         <button
           type="button"
-          className={activeTab === 'status' ? 'tab active' : 'tab'}
-          onClick={() => setActiveTab('status')}
+          className={activeTab === "status" ? "tab active" : "tab"}
+          onClick={() => setActiveTab("status")}
         >
           Status
         </button>
       </nav>
 
-      {activeTab === 'guide' ? (
+      {activeTab === "guide" ? (
         <section className="guide">
           <div className="guide-item">
             <span className="step-number">1</span>
