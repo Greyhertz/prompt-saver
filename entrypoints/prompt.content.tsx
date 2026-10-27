@@ -1,8 +1,8 @@
 import { createRoot } from "react-dom/client";
 import React from "react";
 import SaveStatus from "../components/SaveStatus";
-import { pickAdapter } from "@/utils/adapters";
-import { startEngine } from "@/utils/engine";
+import { pickAdapter } from "@/adapters";
+import { startEngine } from "@/core/engine";
 
 export default defineContentScript({
   matches: ["https://aistudio.google.com/*"],

@@ -1,4 +1,4 @@
-import { saveValue, getValue, clearDraft } from "@/utils/storage";
+import { saveValue, getValue, clearDraft } from "@/storage/drafts";
 
 export default defineBackground(() => {
   // Run operations one at a time so they can't overwrite each other
