@@ -3,7 +3,7 @@ import { useState } from 'react';
 import reactLogo from '@/assets/react.svg';
 import logo from '@/assets/logo.png';
 import wxtLogo from '/wxt.svg';
-import './App.css';
+import './app.css';
 
 function App() {
   const [activeTab, setActiveTab] = useState<'guide' | 'status'>('guide');
