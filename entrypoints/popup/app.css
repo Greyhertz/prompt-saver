@@ -1,6 +1,10 @@
 :root {
   color-scheme: light dark;
-  font-family: Inter, system-ui, -apple-system, sans-serif;
+  font-family:
+    Inter,
+    system-ui,
+    -apple-system,
+    sans-serif;
   color: light-dark(#171717, #ededed);
   background: light-dark(#ffffff, #1e1e1e);
   font-synthesis: none;
@@ -17,7 +21,6 @@ body {
   margin: 0;
   background: light-dark(#ffffff, #1e1e1e);
   color: light-dark(#171717, #ededed);
-
 }
 
 button {
@@ -94,7 +97,9 @@ button {
   border-radius: 5px;
   cursor: pointer;
   font-size: 11px;
-  transition: background 150ms ease, color 150ms ease;
+  transition:
+    background 150ms ease,
+    color 150ms ease;
 }
 
 .tab:hover {

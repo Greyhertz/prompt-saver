@@ -1,32 +1,13 @@
 import { browser } from "wxt/browser";
-import type { SiteAdapter, SavedFile } from "./adapters/types";
-
-export type Status = "saving" | "saved" | "idle";
+import type { ChatAdapter } from "@/adapters/chat-adapter";
+import type { SavedFile, Status } from "@/types";
+import { fileToSaved, savedToFile } from "./files";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-function fileToSaved(file: File): Promise<SavedFile> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () =>
-      resolve({
-        name: file.name,
-        type: file.type,
-        dataUrl: reader.result as string,
-      });
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
-}
-
-async function savedToFile(f: SavedFile) {
-  const blob = await (await fetch(f.dataUrl)).blob();
-  return new File([blob], f.name, { type: f.type });
-}
-
 /** Starts the engine and restarts it whenever the conversation changes. */
 export function startEngine(
-  adapter: SiteAdapter,
+  adapter: ChatAdapter,
   setStatus: (s: Status) => void,
 ) {
   let currentKey = adapter.draftKey();
@@ -44,7 +25,7 @@ export function startEngine(
 }
 
 /** One session = one conversation. stop() ends it cleanly. */
-function runSession(adapter: SiteAdapter, setStatus: (s: Status) => void) {
+function runSession(adapter: ChatAdapter, setStatus: (s: Status) => void) {
   const key = adapter.draftKey();
   const ac = new AbortController();
   const opts = { capture: true, signal: ac.signal } as const;
