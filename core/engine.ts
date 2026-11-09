@@ -102,11 +102,11 @@ function runSession(adapter: ChatAdapter, setStatus: (s: Status) => void) {
     const end = Date.now() + 8000;
     while (!dead && Date.now() < end) {
       if (adapter.chipCount() > before) {
-        await sleep(400);
+        await sleep(adapter.timing.afterChip);
         console.log(`✅ Restored: ${f.name}`);
         return true;
       }
-      await sleep(250);
+      await sleep(adapter.timing.chipPoll);
     }
     if (!dead) console.warn(`❌ No chip appeared for: ${f.name}`);
     return false;
@@ -167,24 +167,31 @@ function runSession(adapter: ChatAdapter, setStatus: (s: Status) => void) {
   );
 
   // ---------- SAVE TEXT ----------
+  const scheduleSave = (text: string) => {
+    lastText = text;
+    pendingText = text;
+    setStatus("saving");
+    clearTimeout(timer);
+    timer = setTimeout(async () => {
+      if (pendingText === null) return;
+      const t = pendingText;
+      pendingText = null;
+      await send("SAVE_TEXT", { text: t });
+      if (!dead) setStatus("saved");
+    }, 800);
+  };
+
   document.addEventListener(
     "input",
     (e) => {
       const el = e.target;
       if (!adapter.isInput(el) || restoringText) return;
       if (e.isTrusted) userActed = true;
-
-      lastText = adapter.readText(el as HTMLElement);
-      pendingText = lastText;
-      setStatus("saving");
-      clearTimeout(timer);
-      timer = setTimeout(async () => {
-        if (pendingText === null) return;
-        const text = pendingText;
-        pendingText = null;
-        await send("SAVE_TEXT", { text });
-        if (!dead) setStatus("saved");
-      }, 800);
+      // Rich editors update their DOM a moment after `input`: read after they settle
+      setTimeout(() => {
+        if (dead || restoringText) return;
+        scheduleSave(adapter.readText(el as HTMLElement));
+      }, 60);
     },
     opts,
   );
@@ -311,6 +318,12 @@ function runSession(adapter: ChatAdapter, setStatus: (s: Status) => void) {
     }
     const now = Date.now();
     const chips = adapter.chipCount();
+    // Editors like Quill may change text without firing `input`: catch that here.
+    // Only non-empty text is saved, so a page reset can never wipe a draft.
+    const cur = adapter.getText();
+    if (cur !== lastText && !restoringText && (cur.trim() || userActed)) {
+      scheduleSave(cur);
+    }
 
     // Protected window right after a restore, with no real user action yet:
     // never clear anything. If the page wiped our restore, put it back.
@@ -372,10 +385,10 @@ function runSession(adapter: ChatAdapter, setStatus: (s: Status) => void) {
 
   // ---------- RESTORE ----------
   const waitForInput = async () => {
-    for (let i = 0; i < 30 && !dead; i++) {
+    for (let i = 0; i < 500 && !dead; i++) {
       const el = adapter.getInput();
       if (el) return el;
-      await sleep(500);
+      await sleep(100);
     }
     return null;
   };
@@ -389,10 +402,10 @@ function runSession(adapter: ChatAdapter, setStatus: (s: Status) => void) {
 
       const el = await waitForInput();
       if (!el || dead) return;
-      await sleep(1000); // let the app finish initializing
+      await sleep(adapter.timing.initDelay); // let the app finish initializing
 
       // After a chat switch, the old chat's chips may linger briefly
-      if (adapter.chipCount() > 0) await sleep(1500);
+      if (adapter.chipCount() > 0) await sleep(adapter.timing.initDelay * 1.5);
 
       if (adapter.chipCount() > 0) {
         console.warn("⚠️ Page already has chips, skipping file restore");
@@ -402,7 +415,7 @@ function runSession(adapter: ChatAdapter, setStatus: (s: Status) => void) {
       }
 
       applyText();
-      await sleep(2000);
+      await sleep(adapter.timing.reapplyDelay);
       applyText();
     } finally {
       restoreDone = true;

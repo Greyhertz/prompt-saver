@@ -2,8 +2,9 @@ import { createRoot } from "react-dom/client";
 import SaveStatus from "../components/save-status";
 import { AIStudioAdapter } from "@/adapters/aistudio";
 import { startEngine } from "@/core/engine";
+import { GeminiAdapter } from "@/adapters/gemini";
 
-const adapters = [new AIStudioAdapter()];
+const adapters = [new AIStudioAdapter(),  new GeminiAdapter()];
 
 export default defineContentScript({
   matches: adapters.flatMap((a) => a.matches),
