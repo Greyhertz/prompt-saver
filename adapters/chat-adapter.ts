@@ -30,4 +30,12 @@ export abstract class ChatAdapter {
   matchesHost(hostname: string): boolean {
     return this.hosts.includes(hostname);
   }
+
+    /** Restore timing in ms. Adapters override what they can shorten. */
+  readonly timing = {
+    initDelay: 1000, // wait after the input appears
+    chipPoll: 250, // how often to check for a new chip
+    afterChip: 400, // pause after a chip appears
+    reapplyDelay: 2000, // wait before re-checking the text
+  };
 }
