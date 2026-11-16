@@ -1,8 +1,5 @@
 import { ChatAdapter } from "./chat-adapter";
-
 const EDITOR_SEL = "rich-textarea .ql-editor";
-// TODO: replace with the real selector for the chip's X button.
-// It matches nothing, so file capture and restore stay inert on Gemini.
 const REMOVE_SEL = 'button[aria-label="close attachment"]';
 
 function readEditor(el: HTMLElement): string {
@@ -54,7 +51,9 @@ export class GeminiAdapter extends ChatAdapter {
     afterChip: 100,
     reapplyDelay: 600,
   };
-  override readonly longTextAsFile = { threshold: 4000 };
+  override readonly textSettleMs = 60;
+  override readonly pollsText = true;
+  override readonly longTextAsFile = { threshold: 1000 };
   getInput() {
     return document.querySelector<HTMLElement>(EDITOR_SEL);
   }

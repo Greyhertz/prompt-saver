@@ -52,6 +52,8 @@ function runSession(adapter: ChatAdapter, setStatus: (s: Status) => void) {
   let busy = 0;
   let zeroTicks = 0;
 
+  lastText = adapter.getText();
+
   const persist = async () => {
     if (dead) return;
     await send("SET_FILES", { files: current });
@@ -107,6 +109,32 @@ function runSession(adapter: ChatAdapter, setStatus: (s: Status) => void) {
         return true;
       }
       await sleep(adapter.timing.chipPoll);
+    }
+
+    if (!dead && f.kind !== "paste-text") {
+      const target =
+        (el.closest("[xapfileselectordropzone]") as HTMLElement) ??
+        el.parentElement ??
+        el;
+      const dt2 = new DataTransfer();
+      dt2.items.add(await savedToFile(f));
+      for (const type of ["dragenter", "dragover", "drop"]) {
+        target.dispatchEvent(
+          new DragEvent(type, {
+            dataTransfer: dt2,
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+      }
+      const end2 = Date.now() + 1000;
+      while (!dead && Date.now() < end2) {
+        if (adapter.chipCount() > before) {
+          console.log(`✅ Restored via drop: ${f.name}`);
+          return true;
+        }
+        await sleep(adapter.timing.chipPoll);
+      }
     }
     if (!dead) console.warn(`❌ No chip appeared for: ${f.name}`);
     return false;
@@ -191,22 +219,49 @@ function runSession(adapter: ChatAdapter, setStatus: (s: Status) => void) {
       setTimeout(() => {
         if (dead || restoringText) return;
         scheduleSave(adapter.readText(el as HTMLElement));
-      }, 60);
+      }, adapter.textSettleMs ?? 0);
     },
     opts,
   );
 
   // ---------- CAPTURE (real user actions only) ----------
-  const capture = (files: File[], pastedText: string, source: string) => {
+  const capture = (
+    files: File[],
+    pastedText: string,
+    source: string,
+    longText?: string,
+    expectChip = false,
+  ) => {
     userActed = true;
     enqueue(async () => {
+      if (expectChip) {
+        // Gemini can take several seconds to show the chip for a big text file
+        const end = Date.now() + 10000;
+        while (
+          !dead &&
+          Date.now() < end &&
+          adapter.chipCount() <= current.length
+        ) {
+          await sleep(150);
+        }
+      }
       const settled = await settleChips();
       if (dead) return;
       const delta = settled - current.length;
       if (delta <= 0) return;
 
       let items: SavedFile[] = [];
-      if (files.length) {
+      if (longText !== undefined) {
+        items = [
+          {
+            kind: "long-text",
+            name: files[0]?.name ?? "long-text",
+            type: "text/plain",
+            dataUrl: "",
+            pastedText: longText,
+          },
+        ];
+      } else if (files.length) {
         items = await Promise.all(files.map(fileToSaved));
       } else if (pastedText) {
         items = [
@@ -255,9 +310,42 @@ function runSession(adapter: ChatAdapter, setStatus: (s: Status) => void) {
   document.addEventListener(
     "paste",
     (e) => {
+      console.log("PASTE seen", {
+        trusted: e.isTrusted,
+        files: e.clipboardData?.files.length,
+        textLen: e.clipboardData?.getData("text/plain").length,
+        hasLT: !!adapter.longTextAsFile,
+        threshold: adapter.longTextAsFile?.threshold,
+        hasBox: !!adapter.getInput(),
+      });
       if (!e.isTrusted) return;
       const files = Array.from(e.clipboardData?.files ?? []);
       const text = e.clipboardData?.getData("text/plain") ?? "";
+
+      // Long text on a site that truncates it: turn it into a .txt attachment
+      const lt = adapter.longTextAsFile;
+      const box = adapter.getInput();
+      if (lt && box && !files.length && text.length >= lt.threshold) {
+        e.preventDefault();
+        e.stopImmediatePropagation(); // the editor never sees the long text
+        const file = new File([text], `pasted-text-${Date.now()}.txt`, {
+          type: "text/plain",
+        });
+        const dt = new DataTransfer();
+        dt.items.add(file);
+        box.focus();
+        // untrusted, so our own listeners ignore it; Gemini's handler attaches it
+        box.dispatchEvent(
+          new ClipboardEvent("paste", {
+            clipboardData: dt,
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+        capture([file], "", "long paste", text, true); // saves it once the chip appears
+        return;
+      }
+
       if (files.length || text)
         capture(files, files.length ? "" : text, "paste");
     },
@@ -297,6 +385,7 @@ function runSession(adapter: ChatAdapter, setStatus: (s: Status) => void) {
           console.log("🗑️ Removed item", index, "remaining:", current.length);
         }
         const settled = await settleChips();
+
         if (!dead && current.length > settled) {
           current = current.slice(0, settled);
           draftFiles = current;
@@ -312,6 +401,10 @@ function runSession(adapter: ChatAdapter, setStatus: (s: Status) => void) {
   const tick = setInterval(() => {
     // Chat already changed: the UI is being swapped, never act on it
     if (dead || adapter.draftKey() !== key) return;
+    if (adapter.pollsText) {
+      const cur = adapter.getText();
+      if (userActed && cur !== lastText && !restoringText) scheduleSave(cur);
+    }
     if (!restoreDone || busy > 0) {
       zeroTicks = 0;
       return;
@@ -321,7 +414,12 @@ function runSession(adapter: ChatAdapter, setStatus: (s: Status) => void) {
     // Editors like Quill may change text without firing `input`: catch that here.
     // Only non-empty text is saved, so a page reset can never wipe a draft.
     const cur = adapter.getText();
-    if (cur !== lastText && !restoringText && (cur.trim() || userActed)) {
+    if (
+      userActed &&
+      cur !== lastText &&
+      !restoringText &&
+      (cur.trim() || userActed)
+    ) {
       scheduleSave(cur);
     }
 

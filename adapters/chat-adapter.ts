@@ -21,8 +21,20 @@ export abstract class ChatAdapter {
   abstract draftKey(): string;
   /** Is this element the Run/Send control? */
   abstract isSendControl(el: Element): boolean;
-
+  /** If set, pastes at least this long are attached as a .txt file instead of typed in. */
+  readonly longTextAsFile?: { threshold: number };
   /** Match patterns for the content script, derived from hosts */
+  /** Restore timing in ms. Adapters override what they can shorten. */
+  readonly timing = {
+    initDelay: 1000, // wait after the input appears
+    chipPoll: 250, // how often to check for a new chip
+    afterChip: 400, // pause after a chip appears
+    reapplyDelay: 2000, // wait before re-checking the text
+  };
+    /** ms to wait after an input event before reading the box (rich editors update late) */
+  readonly textSettleMs?: number;
+  /** also poll the box for changes, for editors that don't fire `input` */
+  readonly pollsText?: boolean;
   get matches(): string[] {
     return this.hosts.map((h) => `https://${h}/*`);
   }
@@ -32,10 +44,4 @@ export abstract class ChatAdapter {
   }
 
     /** Restore timing in ms. Adapters override what they can shorten. */
-  readonly timing = {
-    initDelay: 1000, // wait after the input appears
-    chipPoll: 250, // how often to check for a new chip
-    afterChip: 400, // pause after a chip appears
-    reapplyDelay: 2000, // wait before re-checking the text
-  };
 }
