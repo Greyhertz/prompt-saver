@@ -13,7 +13,8 @@ export abstract class ChatAdapter {
   abstract readText(el: HTMLElement): string;
   /** Read the current prompt text */
   abstract getText(): string;
-  /** Put text into the prompt box so the app notices it */
+  
+  
   abstract setText(text: string): void;
   /** Number of attachment chips on screen */
   abstract chipCount(): number;
@@ -21,8 +22,21 @@ export abstract class ChatAdapter {
   abstract draftKey(): string;
   /** Is this element the Run/Send control? */
   abstract isSendControl(el: Element): boolean;
-
+  /** If set, pastes at least this long are attached as a .txt file instead of typed in. */
+  readonly longTextAsFile?: { threshold: number };
   /** Match patterns for the content script, derived from hosts */
+  /** Restore timing in ms. Adapters override what they can shorten. */
+  readonly timing?:{
+    initDelay: number;
+    chipPoll: number;
+    afterChip: number;
+    reapplyDelay: number;
+  };
+  
+  /** ms to wait after an input event before reading the box (rich editors update late) */
+  readonly textSettleMs?: number;
+  /** also poll the box for changes, for editors that don't fire `input` */
+  readonly pollsText?: boolean;
   get matches(): string[] {
     return this.hosts.map((h) => `https://${h}/*`);
   }
@@ -31,11 +45,28 @@ export abstract class ChatAdapter {
     return this.hosts.includes(hostname);
   }
 
-    /** Restore timing in ms. Adapters override what they can shorten. */
-  readonly timing = {
-    initDelay: 1000, // wait after the input appears
-    chipPoll: 250, // how often to check for a new chip
-    afterChip: 400, // pause after a chip appears
-    reapplyDelay: 2000, // wait before re-checking the text
-  };
+  /** Restore timing in ms. Adapters override what they can shorten. */
+
+  /**
+   * Try to attach a file to the page. Return true if a chip appeared.
+   * Default: a synthetic paste. Adapters override this for sites that need
+   * something different (a drop, a hidden file input, etc.).
+   */
+  async attachFile(
+    input: HTMLElement,
+    file: File,
+    waitForChip: () => Promise<boolean>,
+  ): Promise<boolean> {
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    input.focus();
+    input.dispatchEvent(
+      new ClipboardEvent("paste", {
+        clipboardData: dt,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    return waitForChip();
+  }
 }
