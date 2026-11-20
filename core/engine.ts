@@ -5,7 +5,25 @@ import { fileToSaved, savedToFile } from "./files";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** Starts the engine and restarts it whenever the conversation changes. */
+type TimingConfig = {
+  initDelay: number;
+  chipPoll: number;
+  afterChip: number;
+  reapplyDelay: number;
+};
+
+const DEFAULT_TIMING: TimingConfig = { 
+  initDelay: 1000, 
+  chipPoll: 250, 
+  afterChip: 400, 
+  reapplyDelay: 2000 
+};
+
+/**
+ * Keeps an eye on the page URL. If the user switches to a different 
+ * chat or opens a new one, this stops the old session and starts 
+ * a fresh tracking session for the new chat.
+ */
 export function startEngine(
   adapter: ChatAdapter,
   setStatus: (s: Status) => void,
@@ -17,16 +35,21 @@ export function startEngine(
     const key = adapter.draftKey();
     if (key === currentKey) return;
     console.log("🚀 Session started:", key, location.href);
-    // console.log("🔀 Chat changed:", currentKey, "→", key);
     currentKey = key;
     stopSession();
     stopSession = runSession(adapter, setStatus);
   }, 150);
 }
 
-/** One session = one conversation. stop() ends it cleanly. */
+/**
+ * Runs the core logic for a single chat conversation. 
+ * It listens to user typing and file uploads, auto-saves drafts, 
+ * restores text and files if you reload, and figures out when 
+ * you've hit send so it can clean up after itself.
+ */
 function runSession(adapter: ChatAdapter, setStatus: (s: Status) => void) {
   const key = adapter.draftKey();
+  const timing: TimingConfig = { ...DEFAULT_TIMING, ...adapter.timing };
   const ac = new AbortController();
   const opts = { capture: true, signal: ac.signal } as const;
   let dead = false;
@@ -36,18 +59,18 @@ function runSession(adapter: ChatAdapter, setStatus: (s: Status) => void) {
     browser.runtime.sendMessage({ type, key, payload });
 
   // ---------- state ----------
-  let current: SavedFile[] = []; // mirrors the chips on screen, same order
-  let draftText = ""; // what was loaded from storage (for the watchdog)
+  let current: SavedFile[] = []; 
+  let draftText = ""; 
   let draftFiles: SavedFile[] = [];
   let timer: ReturnType<typeof setTimeout>;
   let pendingText: string | null = null;
   let lastText = "";
   let restoringText = false;
   let restoreDone = false;
-  let protectUntil = 0; // after a restore, never clear anything until this time...
-  let userActed = false; // ...unless the user really did something
-  let lastSendish = 0; // last real click on a button / Enter key
-  let lastNavish = 0; // last real click that was NOT a send
+  let protectUntil = 0; 
+  let userActed = false; 
+  let lastSendish = 0; 
+  let lastNavish = 0; 
   let rerestores = 0;
   let busy = 0;
   let zeroTicks = 0;
@@ -71,6 +94,12 @@ function runSession(adapter: ChatAdapter, setStatus: (s: Status) => void) {
   };
 
   // ---------- helpers ----------
+
+  /**
+   * Waits until the file attachment chips stop changing on the screen. 
+   * This prevents the extension from trying to do too many things 
+   * before the web page is actually finished rendering the files.
+   */
   async function settleChips(quiet = 1200, max = 10000) {
     const end = Date.now() + max;
     let last = adapter.chipCount();
@@ -86,62 +115,48 @@ function runSession(adapter: ChatAdapter, setStatus: (s: Status) => void) {
     return last;
   }
 
+  /**
+   * Puts a saved file or pasted text back into the chat box. 
+   * It asks the site's specific adapter to attach the file, 
+   * and then waits to make sure the visual chip actually shows up.
+   */
   async function attachFile(el: HTMLElement, f: SavedFile) {
     const before = adapter.chipCount();
-    const dt = new DataTransfer();
-    if (f.kind === "paste-text") dt.setData("text/plain", f.pastedText ?? "");
-    else dt.items.add(await savedToFile(f));
-
-    el.focus();
-    el.dispatchEvent(
-      new ClipboardEvent("paste", {
-        clipboardData: dt,
-        bubbles: true,
-        cancelable: true,
-      }),
-    );
-
-    const end = Date.now() + 8000;
-    while (!dead && Date.now() < end) {
-      if (adapter.chipCount() > before) {
-        await sleep(adapter.timing.afterChip);
-        console.log(`✅ Restored: ${f.name}`);
-        return true;
-      }
-      await sleep(adapter.timing.chipPoll);
-    }
-
-    if (!dead && f.kind !== "paste-text") {
-      const target =
-        (el.closest("[xapfileselectordropzone]") as HTMLElement) ??
-        el.parentElement ??
-        el;
-      const dt2 = new DataTransfer();
-      dt2.items.add(await savedToFile(f));
-      for (const type of ["dragenter", "dragover", "drop"]) {
-        target.dispatchEvent(
-          new DragEvent(type, {
-            dataTransfer: dt2,
-            bubbles: true,
-            cancelable: true,
-          }),
-        );
-      }
-      const end2 = Date.now() + 1000;
-      while (!dead && Date.now() < end2) {
+    const waitForChip = async () => {
+      const end = Date.now() + 8000;
+      while (!dead && Date.now() < end) {
         if (adapter.chipCount() > before) {
-          console.log(`✅ Restored via drop: ${f.name}`);
+          await sleep(timing.afterChip);
           return true;
         }
-        await sleep(adapter.timing.chipPoll);
+        await sleep(timing.chipPoll);
       }
+      return false;
+    };
+
+    if (f.kind === "paste-text") {
+      const dt = new DataTransfer();
+      dt.setData("text/plain", f.pastedText ?? "");
+      el.focus();
+      el.dispatchEvent(
+        new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }),
+      );
+      const ok = await waitForChip();
+      if (!ok && !dead) console.warn(`❌ No chip appeared for: ${f.name}`);
+      return ok;
     }
-    if (!dead) console.warn(`❌ No chip appeared for: ${f.name}`);
-    return false;
+
+    const ok = adapter.attachFile(el, await savedToFile(f), waitForChip);
+    if (ok) console.log(`✅ Restored: ${f.name}`);
+    else if (!dead) console.warn(`❌ No chip appeared for: ${f.name}`);
+    return ok;
   }
 
-  // Replays the saved files. Does NOT overwrite storage, so a failed
-  // attempt can never destroy the saved copy.
+  /**
+   * Loops through all the files we have saved in storage 
+   * and replays them one by one to put them back into the chat. 
+   * It does this safely without deleting the backup copy.
+   */
   async function restoreFiles(el: HTMLElement) {
     if (!draftFiles.length) return;
     current = [];
@@ -156,6 +171,11 @@ function runSession(adapter: ChatAdapter, setStatus: (s: Status) => void) {
     }
   }
 
+  /**
+   * Checks if the chat box is empty. If it is, 
+   * and we have saved text waiting in storage, it drops 
+   * that text back into the box.
+   */
   function applyText() {
     if (dead) return;
     if (draftText.trim() && adapter.getText().trim() === "") {
@@ -168,20 +188,31 @@ function runSession(adapter: ChatAdapter, setStatus: (s: Status) => void) {
   }
 
   // ---------- track REAL user actions (synthetic events are ignored) ----------
+
+  /**
+   * Listens for genuine mouse clicks on the page. 
+   * It ignores fake events triggered by scripts and figures out 
+   * if the user clicked a navigation button or the actual "Send" button.
+   */
   document.addEventListener(
     "click",
     (e) => {
       if (!e.isTrusted) return;
       userActed = true;
       const t = e.target as Element | null;
-      if (t?.closest?.(adapter.removeSelector)) return; // chip X is handled elsewhere
+      if (t?.closest?.(adapter.removeSelector)) return; 
       const ctl = t?.closest?.("button, a, [role='button']");
       if (ctl && adapter.isSendControl(ctl)) lastSendish = Date.now();
-      else lastNavish = Date.now(); // New chat, sidebar, menus, etc.
+      else lastNavish = Date.now(); 
     },
     opts,
   );
 
+  /**
+   * Catches keyboard typing, specifically looking out for 
+   * when the user hits the Enter key inside the prompt box 
+   * to submit a message.
+   */
   document.addEventListener(
     "keydown",
     (e) => {
@@ -195,6 +226,12 @@ function runSession(adapter: ChatAdapter, setStatus: (s: Status) => void) {
   );
 
   // ---------- SAVE TEXT ----------
+
+  /**
+   * Waits a moment after you stop typing before saving your text 
+   * so it doesn't spam the storage on every single keystroke. 
+   * Updates the UI status badge to show "Saving..." or "Saved".
+   */
   const scheduleSave = (text: string) => {
     lastText = text;
     pendingText = text;
@@ -215,7 +252,6 @@ function runSession(adapter: ChatAdapter, setStatus: (s: Status) => void) {
       const el = e.target;
       if (!adapter.isInput(el) || restoringText) return;
       if (e.isTrusted) userActed = true;
-      // Rich editors update their DOM a moment after `input`: read after they settle
       setTimeout(() => {
         if (dead || restoringText) return;
         scheduleSave(adapter.readText(el as HTMLElement));
@@ -225,6 +261,12 @@ function runSession(adapter: ChatAdapter, setStatus: (s: Status) => void) {
   );
 
   // ---------- CAPTURE (real user actions only) ----------
+
+  /**
+   * Catches files when you select them via file picker, paste them, 
+   * or drag-and-drop them. It packages them up and queues 
+   * them to be saved safely.
+   */
   const capture = (
     files: File[],
     pastedText: string,
@@ -235,7 +277,6 @@ function runSession(adapter: ChatAdapter, setStatus: (s: Status) => void) {
     userActed = true;
     enqueue(async () => {
       if (expectChip) {
-        // Gemini can take several seconds to show the chip for a big text file
         const end = Date.now() + 10000;
         while (
           !dead &&
@@ -322,19 +363,18 @@ function runSession(adapter: ChatAdapter, setStatus: (s: Status) => void) {
       const files = Array.from(e.clipboardData?.files ?? []);
       const text = e.clipboardData?.getData("text/plain") ?? "";
 
-      // Long text on a site that truncates it: turn it into a .txt attachment
       const lt = adapter.longTextAsFile;
       const box = adapter.getInput();
       if (lt && box && !files.length && text.length >= lt.threshold) {
         e.preventDefault();
-        e.stopImmediatePropagation(); // the editor never sees the long text
+        e.stopImmediatePropagation(); 
         const file = new File([text], `pasted-text-${Date.now()}.txt`, {
           type: "text/plain",
         });
         const dt = new DataTransfer();
         dt.items.add(file);
         box.focus();
-        // untrusted, so our own listeners ignore it; Gemini's handler attaches it
+       
         box.dispatchEvent(
           new ClipboardEvent("paste", {
             clipboardData: dt,
@@ -342,7 +382,7 @@ function runSession(adapter: ChatAdapter, setStatus: (s: Status) => void) {
             cancelable: true,
           }),
         );
-        capture([file], "", "long paste", text, true); // saves it once the chip appears
+        capture([file], "", "long paste", text, true); 
         return;
       }
 
@@ -363,6 +403,11 @@ function runSession(adapter: ChatAdapter, setStatus: (s: Status) => void) {
   );
 
   // ---------- REMOVE ONE (real clicks only) ----------
+
+  /**
+   * Watches for when you click the "X" button on an attached file chip. 
+   * When clicked, it removes that file from our saved list and updates storage.
+   */
   document.addEventListener(
     "click",
     (e) => {
@@ -372,7 +417,6 @@ function runSession(adapter: ChatAdapter, setStatus: (s: Status) => void) {
       );
       if (!btn) return;
 
-      // Capture phase: the chip is still in the DOM, so read its position now
       const index = Array.from(
         document.querySelectorAll(adapter.removeSelector),
       ).indexOf(btn);
@@ -398,8 +442,14 @@ function runSession(adapter: ChatAdapter, setStatus: (s: Status) => void) {
   );
 
   // ---------- WATCHDOG + SEND DETECTION ----------
+
+  /**
+   * A background loop running in the background of the session. 
+   * It checks if you've sent a message (by noticing if the text box 
+   * or files disappear shortly after you hit send) so it can clear out 
+   * the old draft and prevent it from popping back up on reload.
+   */
   const tick = setInterval(() => {
-    // Chat already changed: the UI is being swapped, never act on it
     if (dead || adapter.draftKey() !== key) return;
     if (adapter.pollsText) {
       const cur = adapter.getText();
@@ -411,8 +461,6 @@ function runSession(adapter: ChatAdapter, setStatus: (s: Status) => void) {
     }
     const now = Date.now();
     const chips = adapter.chipCount();
-    // Editors like Quill may change text without firing `input`: catch that here.
-    // Only non-empty text is saved, so a page reset can never wipe a draft.
     const cur = adapter.getText();
     if (
       userActed &&
@@ -423,8 +471,6 @@ function runSession(adapter: ChatAdapter, setStatus: (s: Status) => void) {
       scheduleSave(cur);
     }
 
-    // Protected window right after a restore, with no real user action yet:
-    // never clear anything. If the page wiped our restore, put it back.
     if (now < protectUntil && !userActed) {
       if (rerestores < 3) {
         if (draftFiles.length && chips === 0) {
@@ -448,13 +494,11 @@ function runSession(adapter: ChatAdapter, setStatus: (s: Status) => void) {
 
     const recentSend = (ms: number) => now - lastSendish < ms;
 
-    // A navigation click just happened: the page is swapping things, don't judge it
     if (now - lastNavish < 3000) {
       zeroTicks = 0;
       return;
     }
 
-    // Chips vanished shortly after a real click/Enter -> prompt was sent
     if (chips === 0 && current.length > 0 && recentSend(10000)) {
       if (++zeroTicks >= 3) {
         zeroTicks = 0;
@@ -465,7 +509,6 @@ function runSession(adapter: ChatAdapter, setStatus: (s: Status) => void) {
       }
     } else zeroTicks = 0;
 
-    // Box emptied shortly after a real click/Enter -> prompt was sent
     if (
       lastText.trim() !== "" &&
       adapter.getText().trim() === "" &&
@@ -482,6 +525,12 @@ function runSession(adapter: ChatAdapter, setStatus: (s: Status) => void) {
   }, 400);
 
   // ---------- RESTORE ----------
+
+  /**
+   * Runs when you first load or switch a chat. It fetches your saved 
+   * text and files from storage and drops them back into the page 
+   * once the page is fully loaded and ready.
+   */
   const waitForInput = async () => {
     for (let i = 0; i < 500 && !dead; i++) {
       const el = adapter.getInput();
@@ -500,10 +549,10 @@ function runSession(adapter: ChatAdapter, setStatus: (s: Status) => void) {
 
       const el = await waitForInput();
       if (!el || dead) return;
-      await sleep(adapter.timing.initDelay); // let the app finish initializing
+      await sleep(timing.initDelay); 
 
-      // After a chat switch, the old chat's chips may linger briefly
-      if (adapter.chipCount() > 0) await sleep(adapter.timing.initDelay * 1.5);
+      if (adapter.chipCount() > 0)
+        await sleep(timing.initDelay);
 
       if (adapter.chipCount() > 0) {
         console.warn("⚠️ Page already has chips, skipping file restore");
@@ -513,7 +562,7 @@ function runSession(adapter: ChatAdapter, setStatus: (s: Status) => void) {
       }
 
       applyText();
-      await sleep(adapter.timing.reapplyDelay);
+      await sleep(timing.reapplyDelay);
       applyText();
     } finally {
       restoreDone = true;
@@ -523,19 +572,23 @@ function runSession(adapter: ChatAdapter, setStatus: (s: Status) => void) {
   });
 
   // ---------- stop ----------
+
+  /**
+   * Cleans everything up when the session ends or you navigate away. 
+   * If you just sent a message, it wipes the saved draft so it doesn't 
+   * stick around. Otherwise, it makes sure your final typing is saved.
+   */
   return () => {
     const now = Date.now();
     const sentJustNow =
       restoreDone && now - lastSendish < 5000 && lastSendish > lastNavish;
 
     if (sentJustNow) {
-      // Run was clicked and the URL changed (e.g. first message in a new chat)
       send("SAVE_TEXT", { text: "" });
       send("SET_FILES", { files: [] });
       pendingText = null;
       console.log("🗑️ Draft cleared on leave (prompt was sent)");
     } else if (pendingText !== null) {
-      // Plain navigation: save the last keystrokes
       send("SAVE_TEXT", { text: pendingText });
       pendingText = null;
     }
