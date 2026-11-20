@@ -9,7 +9,7 @@ const REMOVE_SEL = 'button[aria-label="close attachment"]';
  */
 function readEditor(el: HTMLElement): string {
   if (el.classList.contains("ql-blank")) return "";
-  
+
   const paras = Array.from(el.querySelectorAll(":scope > p"));
   if (!paras.length) return el.innerText.replace(/\n+$/, "");
 

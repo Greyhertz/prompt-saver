@@ -26,12 +26,12 @@ export abstract class ChatAdapter {
   readonly longTextAsFile?: { threshold: number };
   /** Match patterns for the content script, derived from hosts */
   /** Restore timing in ms. Adapters override what they can shorten. */
-  readonly timing?:{
+  readonly timing?: Partial<{
     initDelay: number;
     chipPoll: number;
     afterChip: number;
     reapplyDelay: number;
-  };
+  }>;
   
   /** ms to wait after an input event before reading the box (rich editors update late) */
   readonly textSettleMs?: number;
