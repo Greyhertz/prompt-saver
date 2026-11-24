@@ -27,11 +27,11 @@ const DEFAULT_TIMING: TimingConfig = {
 export function startEngine(
   adapter: ChatAdapter,
   setStatus: (s: Status) => void,
-) {
+): () => void {
   let currentKey = adapter.draftKey();
   let stopSession = runSession(adapter, setStatus);
 
-  setInterval(() => {
+  const watcher = setInterval(() => {
     const key = adapter.draftKey();
     if (key === currentKey) return;
     console.log("🚀 Session started:", key, location.href);
@@ -39,6 +39,12 @@ export function startEngine(
     stopSession();
     stopSession = runSession(adapter, setStatus);
   }, 150);
+
+  // Stops the chat watcher AND the current session (listeners, timers)
+  return () => {
+    clearInterval(watcher);
+    stopSession();
+  };
 }
 
 /**
@@ -147,7 +153,7 @@ function runSession(adapter: ChatAdapter, setStatus: (s: Status) => void) {
     }
 
     const ok = adapter.attachFile(el, await savedToFile(f), waitForChip);
-    if (ok) console.log(`✅ Restored: ${f.name}`);
+    if (await ok) console.log(`✅ Restored: ${f.name}`);
     else if (!dead) console.warn(`❌ No chip appeared for: ${f.name}`);
     return ok;
   }
