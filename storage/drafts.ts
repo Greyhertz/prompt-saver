@@ -1,7 +1,9 @@
 import { openDB } from "idb";
+import { browser } from "wxt/browser";
 
 const DB_NAME = "PromptSaverDB";
 const STORE_NAME = "drafts";
+const ENABLED_STORAGE_KEY = "promptSaverEnabled";
 
 async function getDB() {
   return openDB(DB_NAME, 1, {
@@ -31,4 +33,32 @@ export async function clearDraft(key: string) {
     tx.store.delete(`${key}:files`),
     tx.done,
   ]);
+}
+
+// Shared across popup and all content scripts via browser.storage.local
+export async function setExtensionEnabled(enabled: boolean): Promise<void> {
+  await browser.storage.local.set({ [ENABLED_STORAGE_KEY]: enabled });
+}
+
+export async function getExtensionEnabled(): Promise<boolean> {
+  const stored = await browser.storage.local.get(ENABLED_STORAGE_KEY);
+  return (stored[ENABLED_STORAGE_KEY] as boolean | undefined) ?? true;
+}
+
+export function onExtensionEnabledChange(
+  callback: (enabled: boolean) => void,
+): () => void {
+  const listener: Parameters<typeof browser.storage.onChanged.addListener>[0] = (
+    changes,
+    area,
+  ) => {
+    if (area === "local" && ENABLED_STORAGE_KEY in changes) {
+      const next =
+        (changes[ENABLED_STORAGE_KEY].newValue as boolean | undefined) ?? true;
+      callback(next);
+    }
+  };
+
+  browser.storage.onChanged.addListener(listener);
+  return () => browser.storage.onChanged.removeListener(listener);
 }
